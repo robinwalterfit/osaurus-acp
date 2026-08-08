@@ -1,0 +1,41 @@
+{
+  "author": {
+    "email": "hello@robinwalter.me",
+    "name": "Robin Walter",
+    "url": "https://robinwalter.me"
+  },
+  "bugs": {
+    "url": "https://github.com/robinwalterfit/osaurus-acp/issues"
+  },
+  "dependencies": {
+    "@zed-industries/agent-client-protocol": "^0.4.5"
+  },
+  "description": "ACP (Agent Client Protocol) adapter that exposes Osaurus agents to ACP clients.",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "bun-types": "^1.3.0",
+    "bun2nix": "^2.1.2",
+    "typescript": "^5.8.0"
+  },
+  "homepage": "https://github.com/robinwalterfit/osaurus-acp",
+  "keywords": [
+    "acp"
+  ],
+  "license": "Apache-2.0",
+  "module": "src/index.ts",
+  "name": "osaurus-acp",
+  "packageManager": "bun@1.3.13",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robinwalterfit/osaurus-acp.git"
+  },
+  "scripts": {
+    "postinstall": "bun2nix -o ./nix/modules/bun.nix",
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

@@ -14,8 +14,11 @@ path = [
   '.envrc',
   '.taplo.toml',
   'allowed_signers',
+  'bun.lock',
   'flake.lock',
+  'package.json',
   'renovate.json',
+  'tsconfig.json',
 ]
 precedence = 'aggregate'
 
