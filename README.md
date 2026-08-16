@@ -8,6 +8,13 @@
 [![Zed](https://img.shields.io/badge/Zed-white?style=flat-square&logo=zedindustries&logoColor=084CCF)](https://zed.dev/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/robinwalterfit/osaurus-acp)
 
+---
+
+> [!CAUTION]
+> This project is currently a PoC (Proof-of-Concept) and therefore not feature-complete. Use at your risk.
+
+---
+
 ACP (Agent Client Protocol) adapter that exposes [Osaurus](https://osaurus.ai/)
 agents to ACP clients like [Zed](https://zed.dev). It speaks newline-delimited JSON-RPC over
 stdio and forwards prompt turns to Osaurus' `POST /agents/{id}/run` endpoint, streaming the
