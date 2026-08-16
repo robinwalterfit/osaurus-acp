@@ -79,12 +79,13 @@ export class OsaurusClient {
   /**
    * Runs an agent turn and yields assistant text deltas as they stream in.
    *
-   * The server persists conversation history per `sessionId`, so only the
-   * new user message is sent per turn.
+   * The endpoint mirrors OpenAI's stateless `/chat/completions` convention, so the caller must send the full
+   * conversation history as the `messages` array on every turn. `session_id` is passed through as opaque metadata for
+   * Osaurus' memory features, but history correctness must not depend on it.
    */
   async *runAgent(
     agentId: string,
-    message: string,
+    messages: ChatMessage[],
     options: RunAgentOptions = {},
   ): AsyncGenerator<string, void, undefined> {
     const response = await this.fetchFn(`${this.baseUrl}/agents/${encodeURIComponent(agentId)}/run`, {
@@ -94,8 +95,9 @@ export class OsaurusClient {
         Accept: "text/event-stream",
       },
       body: JSON.stringify({
+        // TODO(hello@robinwalter.me): Could here a model be selected via Zed to use this model instead of the default agent's model?
         model: "",
-        messages: [{ role: "user", content: message } satisfies ChatMessage],
+        messages,
         stream: true,
         ...(options.sessionId ? { session_id: options.sessionId } : {}),
       }),
@@ -121,8 +123,8 @@ export class OsaurusClient {
 }
 
 /**
- * Parses an OpenAI-style SSE byte stream and yields the text content of
- * each `choices[0].delta.content` field. `[DONE]` ends the stream.
+ * Parses an OpenAI-style SSE byte stream and yields the text content of each `choices[0].delta.content` field.
+ * `[DONE]` ends the stream.
  */
 export async function* parseSseChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<OsaurusChunk, void, undefined> {
   const reader = body.getReader();

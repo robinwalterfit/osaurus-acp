@@ -21,7 +21,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentSideConnection, ContentBlock, SessionNotification } from "@zed-industries/agent-client-protocol";
 
 import { OsaurusAcpAgent, promptToText } from "../src/agent.js";
-import { OsaurusClient } from "../src/osaurus-client.js";
+import { type ChatMessage, OsaurusClient } from "../src/osaurus-client.js";
 
 type SessionUpdate = SessionNotification["update"];
 
@@ -60,6 +60,23 @@ function makeAgent(events: string[]) {
   });
   const agent = new OsaurusAcpAgent({ client, agentId: "default" }, connection);
   return { agent, updates };
+}
+
+/** Builds an agent whose client records every `messages` array passed to runAgent. */
+function makeRecordingAgent(events: string[]) {
+  const { connection, updates } = fakeConnection();
+  const sent: ChatMessage[][] = [];
+  const client = new OsaurusClient({
+    baseUrl: "http://localhost:1337",
+    fetch: sseFetch(events),
+  });
+  const originalRun = client.runAgent.bind(client);
+  client.runAgent = (agentId, messages, options) => {
+    sent.push([...messages]); // snapshot, since the caller mutates the array in place
+    return originalRun(agentId, messages, options);
+  };
+  const agent = new OsaurusAcpAgent({ client, agentId: "default" }, connection);
+  return { agent, updates, sent };
 }
 
 describe("promptToText", () => {
@@ -177,5 +194,89 @@ describe("OsaurusAcpAgent", () => {
     await agent.cancel({ sessionId });
 
     expect((await promptPromise).stopReason).toBe("cancelled");
+  });
+
+  test("sends full history on the second turn (user+assistant+user)", async () => {
+    const { agent, sent } = makeRecordingAgent([
+      textChunk("hi"),
+      "data: [DONE]\n\n",
+      textChunk("yo"),
+      "data: [DONE]\n\n",
+    ]);
+    const { sessionId } = await agent.newSession({ cwd: "/tmp", mcpServers: [] });
+
+    await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await agent.prompt({ sessionId, prompt: [{ type: "text", text: "world" }] });
+
+    expect(sent[0]).toEqual([{ role: "user", content: "hello" }]);
+    expect(sent[1]).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+      { role: "user", content: "world" },
+    ]);
+  });
+
+  test("appends the assistant reply as role:assistant after a successful turn", async () => {
+    const { agent, sent } = makeRecordingAgent([textChunk("ok"), "data: [DONE]\n\n", "data: [DONE]\n\n"]);
+    const { sessionId } = await agent.newSession({ cwd: "/tmp", mcpServers: [] });
+
+    await agent.prompt({ sessionId, prompt: [{ type: "text", text: "first" }] });
+    await agent.prompt({ sessionId, prompt: [{ type: "text", text: "second" }] });
+
+    expect(sent[1]?.[1]).toEqual({ role: "assistant", content: "ok" });
+  });
+
+  test("rolls back the user message when the turn errors", async () => {
+    const { agent, sent } = makeRecordingAgent([textChunk("partial"), "data: [DONE]\n\n"]);
+    const { sessionId } = await agent.newSession({ cwd: "/tmp", mcpServers: [] });
+
+    // First turn succeeds so the transcript has a committed assistant turn.
+    await agent.prompt({ sessionId, prompt: [{ type: "text", text: "first" }] });
+
+    // Second turn errors mid-stream.
+    const erroringFetch = (async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(textChunk("boom")));
+          controller.error(new Error("stream failed"));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch;
+    const { connection } = fakeConnection();
+    const client = new OsaurusClient({ baseUrl: "http://localhost:1337", fetch: erroringFetch });
+    const agent2 = new OsaurusAcpAgent({ client, agentId: "default" }, connection);
+    const s2 = (await agent2.newSession({ cwd: "/tmp", mcpServers: [] })).sessionId;
+
+    await expect(agent2.prompt({ sessionId: s2, prompt: [{ type: "text", text: "boom" }] })).rejects.toThrow();
+
+    // A subsequent successful turn sends only its own user message (no unpaired user turn).
+    const { agent: agent3, sent: sent3 } = makeRecordingAgent([textChunk("fine"), "data: [DONE]\n\n"]);
+    const s3 = (await agent3.newSession({ cwd: "/tmp", mcpServers: [] })).sessionId;
+    await agent3.prompt({ sessionId: s3, prompt: [{ type: "text", text: "after" }] });
+    expect(sent3[0]).toEqual([{ role: "user", content: "after" }]);
+  });
+
+  test("isolates history between sessions", async () => {
+    const { agent, sent } = makeRecordingAgent([
+      textChunk("a"),
+      "data: [DONE]\n\n",
+      textChunk("b"),
+      "data: [DONE]\n\n",
+    ]);
+    const a = (await agent.newSession({ cwd: "/tmp", mcpServers: [] })).sessionId;
+    const b = (await agent.newSession({ cwd: "/tmp", mcpServers: [] })).sessionId;
+
+    await agent.prompt({ sessionId: a, prompt: [{ type: "text", text: "A1" }] });
+    await agent.prompt({ sessionId: b, prompt: [{ type: "text", text: "B1" }] });
+    await agent.prompt({ sessionId: a, prompt: [{ type: "text", text: "A2" }] });
+
+    // Session A's third turn must not include session B's history.
+    expect(sent[2]).toEqual([
+      { role: "user", content: "A1" },
+      { role: "assistant", content: "a" },
+      { role: "user", content: "A2" },
+    ]);
   });
 });

@@ -117,7 +117,9 @@ describe("OsaurusClient.runAgent", () => {
       }),
     });
 
-    const deltas: string[] = await collectToString(client.runAgent("default", "Hello there", { sessionId: "s-1" }));
+    const deltas: string[] = await collectToString(
+      client.runAgent("default", [{ role: "user", content: "Hello there" }], { sessionId: "s-1" }),
+    );
 
     expect(deltas).toEqual(["hi"]);
     expect(captured?.url).toBe("http://localhost:1337/agents/default/run");
@@ -131,6 +133,25 @@ describe("OsaurusClient.runAgent", () => {
     });
   });
 
+  test("sends the full messages array and session_id in the request body", async () => {
+    let captured: RequestInit | undefined;
+    const client = new OsaurusClient({
+      baseUrl: "http://localhost:1337/",
+      fetch: mockFetch(["data: [DONE]\n\n"], { capture: (req) => (captured = req) }),
+    });
+
+    const history = [
+      { role: "user" as const, content: "first" },
+      { role: "assistant" as const, content: "reply" },
+      { role: "user" as const, content: "second" },
+    ];
+    await collectToString(client.runAgent("default", history, { sessionId: "s-1" }));
+
+    const body = JSON.parse(String(captured?.body));
+    expect(body.messages).toEqual(history);
+    expect(body.session_id).toBe("s-1");
+  });
+
   test("omits session_id when no session is given", async () => {
     let captured: RequestInit | undefined;
     const client = new OsaurusClient({
@@ -138,7 +159,7 @@ describe("OsaurusClient.runAgent", () => {
       fetch: mockFetch(["data: [DONE]\n\n"], { capture: (req) => (captured = req) }),
     });
 
-    await collectToString(client.runAgent("abc-123", "hi"));
+    await collectToString(client.runAgent("abc-123", [{ role: "user", content: "hi" }]));
     expect(JSON.parse(String(captured?.body))).not.toHaveProperty("session_id");
   });
 
@@ -147,6 +168,8 @@ describe("OsaurusClient.runAgent", () => {
       baseUrl: "http://localhost:1337/",
       fetch: mockFetch(["unknown agent"], { status: 404 }),
     });
-    await expect(collectToString(client.runAgent("nope", "hi"))).rejects.toThrow(OsaurusHttpError);
+    await expect(collectToString(client.runAgent("nope", [{ role: "user", content: "hi" }]))).rejects.toThrow(
+      OsaurusHttpError,
+    );
   });
 });
