@@ -31,7 +31,7 @@ import {
   type PromptResponse,
 } from "@zed-industries/agent-client-protocol";
 
-import { OsaurusClient } from "./osaurus-client.js";
+import { type ChatMessage, OsaurusClient } from "./osaurus-client.js";
 
 export interface OsaurusAcpAgentOptions {
   /** Osaurus agent UUID, or the alias "default" for the built-in agent. */
@@ -42,15 +42,17 @@ export interface OsaurusAcpAgentOptions {
 interface SessionState {
   /** AbortController for the in-flight prompt turn, if any. */
   currentTurn: AbortController | null;
+  /** Full conversation history for this session, sent on every turn. */
+  messages: ChatMessage[];
 }
 
 /**
- * ACP agent that forwards prompt turns to an Osaurus agent via
- * `POST /agents/{id}/run` and streams the SSE text deltas back to the
- * client as `agent_message_chunk` session updates.
+ * ACP agent that forwards prompt turns to an Osaurus agent via `POST /agents/{id}/run` and streams the SSE text deltas
+ * back to the client as `agent_message_chunk` session updates.
  *
- * ACP session ids are reused as Osaurus `session_id`s, so conversation
- * history is persisted server-side and only the new user message is sent.
+ * Conversation history is kept client-side per ACP session and the full `messages` array is sent on every turn,
+ * matching the stateless `/chat/completions` convention. The ACP session id is also passed as the Osaurus `session_id`
+ * for Osaurus' memory features, but history correctness does not depend on it.
  */
 export class OsaurusAcpAgent implements Agent {
   private readonly sessions = new Map<string, SessionState>();
@@ -70,7 +72,7 @@ export class OsaurusAcpAgent implements Agent {
 
   async newSession(_params: NewSessionRequest): Promise<NewSessionResponse> {
     const sessionId = crypto.randomUUID();
-    this.sessions.set(sessionId, { currentTurn: null });
+    this.sessions.set(sessionId, { currentTurn: null, messages: [] });
     return { sessionId };
   }
 
@@ -90,14 +92,20 @@ export class OsaurusAcpAgent implements Agent {
     const turn = new AbortController();
     session.currentTurn = turn;
 
+    // Append the user message up front; roll it back on failure/cancel so the transcript never holds an unpaired user
+    // turn.
+    session.messages.push({ role: "user", content: message });
+
     try {
-      const deltas = this.options.client.runAgent(this.options.agentId, message, {
+      const deltas = this.options.client.runAgent(this.options.agentId, [...session.messages], {
         sessionId: params.sessionId,
         signal: turn.signal,
       });
 
+      let reply = "";
       for await (const text of deltas) {
         if (turn.signal.aborted) break;
+        reply += text;
         await this.connection.sessionUpdate({
           sessionId: params.sessionId,
           update: {
@@ -107,8 +115,16 @@ export class OsaurusAcpAgent implements Agent {
         });
       }
 
-      return { stopReason: turn.signal.aborted ? "cancelled" : "end_turn" };
+      if (turn.signal.aborted) {
+        session.messages.pop(); // roll back the unpaired user turn
+        return { stopReason: "cancelled" };
+      }
+
+      // Commit the assistant reply so the model sees its own prior output.
+      session.messages.push({ role: "assistant", content: reply });
+      return { stopReason: "end_turn" };
     } catch (error) {
+      session.messages.pop(); // roll back the unpaired user turn
       if (turn.signal.aborted) {
         return { stopReason: "cancelled" };
       }
@@ -126,9 +142,8 @@ export class OsaurusAcpAgent implements Agent {
 }
 
 /**
- * Flattens an ACP prompt into plain text. Text blocks are passed through;
- * resource links and embedded resources are inlined as references so the
- * Osaurus agent sees them as context.
+ * Flattens an ACP prompt into plain text. Text blocks are passed through; resource links and embedded resources are
+ * inlined as references so the Osaurus agent sees them as context.
  */
 export function promptToText(blocks: ContentBlock[]): string {
   const parts: string[] = [];
@@ -147,8 +162,7 @@ export function promptToText(blocks: ContentBlock[]): string {
         }
         break;
       }
-      // image/audio blocks are not advertised in promptCapabilities and
-      // therefore never sent by a compliant client.
+      // image/audio blocks are not advertised in promptCapabilities and therefore never sent by a compliant client.
     }
   }
   return parts.join("\n");
